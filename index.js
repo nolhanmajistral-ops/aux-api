@@ -46,4 +46,4 @@ app.post('/mux', (req, res) => {
           .addInput(files.audio)
           .videoCodec('libx264')
           .audioCodec('aac')
-          .outputOptions(['
+          .outputOptions(['-pix_fmt yuv420p'])
