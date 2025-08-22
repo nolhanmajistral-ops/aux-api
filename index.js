@@ -1,12 +1,13 @@
 import express from 'express';
 import Busboy from 'busboy';
+import { createWriteStream, unlinkSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { createWriteStream, readFileSync, unlinkSync } from 'fs';
 import ffmpeg from 'fluent-ffmpeg';
 import ffmpegPath from 'ffmpeg-static';
 
 ffmpeg.setFfmpegPath(ffmpegPath);
+
 const app = express();
 
 app.get('/', (req, res) => {
@@ -21,29 +22,51 @@ app.post('/mux', (req, res) => {
 
   const done = new Promise((resolve, reject) => {
     bb.on('file', (name, file, info) => {
-      const { filename } = info;
+      const filename = info.filename;
       const saveTo = join(tmp, `${Date.now()}-${filename}`);
       file.pipe(createWriteStream(saveTo)).on('finish', () => {
         files[name] = saveTo;
       });
     });
-    bb.on('field', (n, v) => { if (n === 'durationSec') durationSec = parseFloat(v); });
-    bb.on('error', reject);
+    bb.on('field', (name, val) => {
+      if (name === 'duration') durationSec = parseInt(val);
+    });
     bb.on('finish', resolve);
+    req.pipe(bb);
   });
 
-  req.pipe(bb);
-  done.then(async () => {
+  done.then(() => {
     if (!files.image || !files.audio) {
-      res.status(400).json({ error: 'Champs manquants : image et audio requis' });
-      return;
+      return res.status(400).send('⚠️ Merci d’envoyer "image" et "audio"');
     }
-    try {
-      const outPath = join(tmp, `out-${Date.now()}.mp4`);
-      await new Promise((resolve, reject) => {
-        let cmd = ffmpeg()
-          .addInput(files.image).loop(1)
-          .addInput(files.audio)
-          .videoCodec('libx264')
-          .audioCodec('aac')
-          .outputOptions(['-pix_fmt yuv420p'])
+
+    const outPath = join(tmp, `${Date.now()}-out.mp4`);
+    let command = ffmpeg()
+      .addInput(files.image)
+      .loop(durationSec || 5)
+      .addInput(files.audio)
+      .outputOptions(['-pix_fmt yuv420p'])
+      .output(outPath);
+
+    command.on('end', () => {
+      res.download(outPath, 'output.mp4', () => {
+        try {
+          unlinkSync(files.image);
+          unlinkSync(files.audio);
+          unlinkSync(outPath);
+        } catch {}
+      });
+    });
+
+    command.on('error', (err) => {
+      res.status(500).send('Erreur FFMPEG : ' + err.message);
+    });
+
+    command.run();
+  });
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`🚀 API Mux en ligne sur le port ${PORT}`);
+});
