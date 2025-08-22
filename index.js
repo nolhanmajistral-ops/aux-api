@@ -8,7 +8,10 @@ const ffmpegPath = require('ffmpeg-static');
 ffmpeg.setFfmpegPath(ffmpegPath);
 
 const app = express();
-const port = process.env.PORT || 10000;
+const port = process.env.PORT; // pas de valeur par défaut !
+app.listen(port, () => {
+  console.log(`Mux API running on port ${port}`);
+});
 
 // stockage mémoire (n8n enverra les fichiers en multipart)
 const upload = multer({ storage: multer.memoryStorage() });
