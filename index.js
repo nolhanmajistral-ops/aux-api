@@ -1,5 +1,4 @@
 import express from 'express';
-import multer from 'multer';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { writeFileSync, createReadStream, unlinkSync } from 'fs';
@@ -11,8 +10,6 @@ ffmpeg.setFfmpegPath(ffmpegPath);
 const app = express();
 const port = process.env.PORT || 10000;
 
-// multer en mémoire
-const upload = multer({ storage: multer.memoryStorage() });
 
 // Page d'accueil pour test
 app.get('/', (_req, res) => {
