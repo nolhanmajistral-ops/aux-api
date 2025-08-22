@@ -1,83 +1,83 @@
-import express from "express";
-import Busboy from "busboy";
-import { createWriteStream, readFileSync, unlinkSync } from "fs";
-import { tmpdir } from "os";
-import { join } from "path";
-import ffmpeg from "fluent-ffmpeg";
-import ffmpegPath from "ffmpeg-static";
+import express from 'express';
+import multer from 'multer';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { writeFileSync, createReadStream, unlinkSync } from 'fs';
+import ffmpeg from 'fluent-ffmpeg';
+import ffmpegPath from 'ffmpeg-static';
 
 ffmpeg.setFfmpegPath(ffmpegPath);
 
 const app = express();
+const port = process.env.PORT || 10000;
 
-app.get("/", (req, res) => {
-  res.send("OK - POST /mux (multipart: fields image + audio) -> MP4");
+// multer en mémoire
+const upload = multer({ storage: multer.memoryStorage() });
+
+// Page d'accueil pour test
+app.get('/', (_req, res) => {
+  res.send('OK – POST /mux avec fields image (jpg/png) et audio (mp3)');
 });
 
-app.post("/mux", (req, res) => {
-  const bb = Busboy({ headers: req.headers });
-  const tmp = tmpdir();
-  const files = {};
-  let durationSec = null;
+// Endpoint principal : attend 2 fichiers: image & audio
+app.post('/mux', upload.fields([{ name: 'image' }, { name: 'audio' }]), async (req, res) => {
+  try {
+    // Debug: si tu veux voir ce que tu reçois, dé-commente:
+    // return res.json({ files: Object.keys(req.files || {}), body: req.body });
 
-  const done = new Promise((resolve, reject) => {
-    bb.on("file", (name, file, info) => {
-      const filename = info.filename || "file";
-      const saveTo = join(tmp, Date.now() + "-" + filename);
-      file.pipe(createWriteStream(saveTo)).on("finish", () => {
-        files[name] = saveTo;
-      });
+    if (!req.files || !req.files.image || !req.files.audio) {
+      return res.status(400).json({ error: 'missing fields: need image and audio' });
+    }
+
+    const imageBuf = req.files.image[0].buffer;
+    const audioBuf = req.files.audio[0].buffer;
+
+    // Ecrire en fichiers temporaires
+    const imgPath = join(tmpdir(), `img_${Date.now()}.jpg`);
+    const audPath = join(tmpdir(), `aud_${Date.now()}.mp3`);
+    const outPath = join(tmpdir(), `out_${Date.now()}.mp4`);
+
+    writeFileSync(imgPath, imageBuf);
+    writeFileSync(audPath, audioBuf);
+
+    // Mux avec ffmpeg (image fixe + audio → mp4 vertical 1080x1920)
+    await new Promise((resolve, reject) => {
+      ffmpeg()
+        .addInput(imgPath)
+        .addInput(audPath)
+        .loop(30)                     // boucle l'image (remplacé par -loop 1)
+        .inputOptions(['-loop 1'])    // image fixe
+        .videoCodec('libx264')
+        .size('1080x1920')
+        .fps(30)
+        .audioCodec('aac')
+        .outputOptions([
+          '-shortest',                // s’arrête quand l’audio finit
+          '-pix_fmt yuv420p'
+        ])
+        .on('end', resolve)
+        .on('error', reject)
+        .save(outPath);
     });
-    bb.on("field", (name, val) => {
-      if (name === "durationSec") durationSec = parseFloat(val);
-    });
-    bb.on("error", reject);
-    bb.on("finish", resolve);
-  });
 
-  req.pipe(bb);
+    // Stream la video au client
+    res.setHeader('Content-Type', 'video/mp4');
+    const stream = createReadStream(outPath);
+    stream.pipe(res);
 
-  done
-    .then(async () => {
-      if (!files.image || !files.audio) {
-        res.status(400).send("missing fields: need image and audio");
-        return;
-      }
-
-      const outPath = join(tmp, "out-" + Date.now() + ".mp4");
-
-      await new Promise((resolve, reject) => {
-        let cmd = ffmpeg()
-          .addInput(files.image)
-          .loop(1)
-          .addInput(files.audio)
-          .videoCodec("libx264")
-          .audioCodec("aac")
-          // IMPORTANT: only plain ASCII single quotes here:
-          .outputOptions("-pix_fmt yuv420p", "-shortest")
-          .output(outPath);
-
-        if (durationSec && !isNaN(durationSec)) {
-          cmd = cmd.duration(durationSec);
-        }
-
-        cmd.on("end", resolve).on("error", reject).run();
-      });
-
-      const data = readFileSync(outPath);
-      res.setHeader("Content-Type", "video/mp4");
-      res.end(data);
-
+    // Nettoyage à la fin de l’envoi
+    stream.on('close', () => {
+      try { unlinkSync(imgPath); } catch {}
+      try { unlinkSync(audPath); } catch {}
       try { unlinkSync(outPath); } catch {}
-      try { unlinkSync(files.image); } catch {}
-      try { unlinkSync(files.audio); } catch {}
-    })
-    .catch((e) => {
-      res.status(500).send("error: " + (e.message || String(e)));
     });
+
+  } catch (err) {
+    console.error('Mux error:', err);
+    res.status(500).json({ error: 'ffmpeg failed', detail: String(err) });
+  }
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log("Mux API running on port " + PORT);
+app.listen(port, () => {
+  console.log(`Mux API running on port ${port}`);
 });
